@@ -131,11 +131,13 @@ int State::evaluate(
         // Simply add each piece's value to score
         for(int r=0;r<BOARD_H;r++){
             for(int c=0;c<BOARD_W;c+=1){
-                if(self_board[r][c]){
-                    self_score += simple_material[self_board[r][c]];
+                int self_piece = self_board[r][c];
+                int oppn_piece = oppn_board[r][c];
+                if(self_piece){
+                    self_score += simple_material[self_piece];
                 }
-                if(oppn_board[r][c]){
-                    oppn_score += simple_material[oppn_board[r][c]];
+                if(oppn_piece){
+                    oppn_score += simple_material[oppn_piece];
                 }
             }
         }
@@ -384,7 +386,30 @@ void State::get_legal_actions_naive(){
                     case 3: //knight
                         // [ Hackathon TODO 2-2 ]
                         // complete knight's movement, you can refer to other pieces' movement
+                        for(int k=0; k<8;k++){
+                            int nr=i + move_table_knight[k][0];
+                            int nc=j + move_table_knight[k][1];
 
+                            if(nr>=BOARD_H || nr<0 || nc>=BOARD_W || nc<0){
+                                continue;
+                            }
+
+                            if(self_board[nr][nc]){
+                                continue;
+                            }
+
+                            all_actions.push_back(Move(Point(i, j), Point(nr, nc)));
+
+                            if(oppn_board[nr][nc]){
+                                if(oppn_board[nr][nc]==6){
+                                    this->game_state = WIN;
+                                    this->legal_actions = all_actions;
+                                    return;
+                                }
+                            }
+                        }
+                        break;
+                        
                     case 6: //king
                         for(auto move: move_table_king){
                             int p[2] = {move[0] + i, move[1] + j};

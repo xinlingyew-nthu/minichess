@@ -113,6 +113,11 @@ SearchResult Alphabeta::search(
     SearchContext& ctx
 ){
     ctx.reset();
+
+    if(depth <= 0){
+        depth = 3;
+    }
+
     ABParams p = ABParams::from_map(ctx.params);
     SearchResult result;
     result.depth = depth;

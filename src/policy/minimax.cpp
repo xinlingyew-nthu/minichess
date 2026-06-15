@@ -103,10 +103,13 @@ SearchResult MiniMax::search(
     SearchContext& ctx
 ){
     ctx.reset();
+    if(depth <= 0){
+        depth = 3;
+    }
+
     MMParams p = MMParams::from_map(ctx.params);
     SearchResult result;
     result.depth = depth;
-
     if(!state->legal_actions.size()){
         state->get_legal_actions();
     }

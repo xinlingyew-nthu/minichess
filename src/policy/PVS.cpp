@@ -34,20 +34,28 @@ static int move_score(State* state, const Move& m) {
     if (captured) {
         score += 100000 + val[captured] * 10;
 
-        // MVV-LVA
         if (moving) {
             score -= val[moving];
         }
-    }
 
-    // 2. pawn 前進 bonus
-    if (moving == 1) {
-        if (state->player == 0) {
-            score += (from_r - to_r) * 50;
-        } else {
-            score += (to_r - from_r) * 50;
+        // 如果吃到的是快升變的 pawn，要更優先
+        if (captured == 1) {
+            int danger = 0;
+
+            if (state->player == 0) {
+                // white 吃 black pawn：black pawn row 越大越危險
+                danger = to_r;
+            } else {
+                // black 吃 white pawn：white pawn row 越小越危險
+                danger = BOARD_H - 1 - to_r;
+            }
+
+            score += danger * danger * 200;
         }
     }
+    
+
+    // 2. pawn 前進 bonus
 
     // 3. 中央 bonus
     score += 5 - abs(to_c - 2);
@@ -142,7 +150,7 @@ int pvs::eval_ctx(
     // Repetition
     int rep_score = 0;
     if (state->check_repetition(history, rep_score)) {
-        return rep_score -50;
+        return -80;
     }
 
     history.push(state->hash());

@@ -34,9 +34,20 @@ static int move_score(State* state, const Move& m) {
     if (captured) {
         score += 100000 + val[captured] * 10;
 
-        // MVV-LVA: 吃大子很好，用小子吃更好
         if (moving) {
             score -= val[moving];
+        }
+
+        if (captured == 1) {
+            int danger = 0;
+
+            if (state->player == 0) {
+                danger = to_r;
+            } else {
+                danger = BOARD_H - 1 - to_r;
+            }
+
+            score += danger * danger * 200;
         }
     }
 
@@ -97,7 +108,7 @@ int Alphabeta::eval_ctx(
     // Repetition
     int rep_score = 0;
     if (state->check_repetition(history, rep_score)) {
-        return rep_score -50;
+        return -80;
     }
 
     history.push(state->hash());

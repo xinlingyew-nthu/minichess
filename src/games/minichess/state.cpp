@@ -14,11 +14,14 @@
  * Always compiled. Toggled at runtime via use_kp_eval param.
  *============================================================*/
 
-// KP material (10x scale for fine positional granularity)
-static const int kp_material[7] = {0, 20, 60, 70, 80, 200, 1000};
+// // KP material (10x scale for fine positional granularity)
+// static const int kp_material[7] = {0, 20, 60, 70, 80, 200, 1000};
 
-// Material-only (simple scale)
-static const int simple_material[7] = {0, 2, 6, 7, 8, 20, 100};
+// // Material-only (simple scale)
+// static const int simple_material[7] = {0, 2, 6, 7, 8, 20, 100};
+
+static const int kp_material[7] = {0, 200, 600, 700, 800, 2000, 100000};
+static const int simple_material[7] = {0, 200, 600, 700, 800, 2000, 100000};
 
 // Piece-Square Tables (white perspective, mirror for black)
 static const int pst[6][BOARD_H][BOARD_W] = {
@@ -61,7 +64,32 @@ static int king_tropism(
 /*============================================================
  * evaluate() — runtime-selectable eval strategy
  *============================================================*/
+static int pawn_promotion_bonus(int owner, int r) {
+    // owner == 0: white pawn 往上走，row 變小
+    // owner == 1: black pawn 往下走，row 變大
 
+    int progress;
+
+    if (owner == 0) {
+        progress = BOARD_H - 1 - r;
+    } else {
+        progress = r;
+    }
+
+    int bonus = progress * progress * 80;
+
+    // 只差一步升變，超危險
+    if ((owner == 0 && r == 1) || (owner == 1 && r == BOARD_H - 2)) {
+        bonus += 1000;
+    }
+
+    // 已經到底線，極度危險
+    if ((owner == 0 && r == 0) || (owner == 1 && r == BOARD_H - 1)) {
+        bonus += 3000;
+    }
+
+    return bonus;
+}
 int State::evaluate(
     bool use_kp_eval,
     bool use_mobility,
@@ -135,25 +163,33 @@ int State::evaluate(
 
         for(int r=0;r<BOARD_H;r++){
             for(int c=0;c<BOARD_W;c+=1){
+                
                 if(self_board[r][c]){
                     int pt = self_board[r][c];
+                    if (pt == 1) {
+                    self_score += pawn_promotion_bonus(this->player, r);
+                 }
                     int self_mirror_r = self_advances_down ? (BOARD_H-1-r) : r;
                     self_score += kp_material[pt] + pst[pt-1][self_mirror_r][c];
                     if(pt == 1){
                         int promo_dist = self_advances_down ? (BOARD_H-1-r) : r;
-                        self_score += (BOARD_H - 1 - promo_dist) * 2;
+                        self_score += (BOARD_H - 1 - promo_dist) * 40;
                     }
                     if(oppn_kr != -1){
                         self_score += 3 * king_tropism(pt, r, c, oppn_kr, oppn_kc);
                     }
                 }
                 if(oppn_board[r][c]){
+
                     int pt = oppn_board[r][c];
+                    if (pt == 1) {
+                    oppn_score += pawn_promotion_bonus(1 - this->player, r);
+                    }
                     int oppn_mirror_r = self_advances_down ? r : (BOARD_H-1-r);
                     oppn_score += kp_material[pt] + pst[pt-1][oppn_mirror_r][c];
                     if(pt == 1){
                         int promo_dist = self_advances_down ? r : (BOARD_H-1-r);
-                        oppn_score += (BOARD_H - 1 - promo_dist) * 2;
+                        oppn_score += (BOARD_H - 1 - promo_dist) * 40;
                     }
                     if(self_kr != -1){
                         oppn_score += 3 * king_tropism(pt, r, c, self_kr, self_kc);
@@ -197,7 +233,7 @@ int State::evaluate(
 
         bonus += 4 * (self_mobility - oppn_mobility);
     }
-    static const int threat_val[7] = {0, 2, 6, 7, 8, 20, 100};
+    static const int threat_val[7] = {0, 200, 600, 700, 800, 2000, 100000};
 
     int self_threat = 0;
     int oppn_threat = 0;
@@ -225,7 +261,7 @@ int State::evaluate(
 
     delete opp;
 
-    bonus += 3 * (self_threat - oppn_threat);
+    bonus += (self_threat - oppn_threat)/4;
     return self_score - oppn_score + bonus;
 }
 

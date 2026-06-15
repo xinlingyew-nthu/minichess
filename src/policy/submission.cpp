@@ -189,7 +189,7 @@ int submission::quiescence(
     // 先用目前局面 evaluate
     int stand_pat = state->evaluate(
         p.use_kp_eval,
-        false,
+        p.use_eval_mobility,
         &history
     );
 

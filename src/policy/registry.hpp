@@ -17,6 +17,7 @@
 #include "random.hpp"
 #include "alphabeta.hpp"
 #include "PVS.hpp"
+#include "submission.hpp"
 
 struct AlgoEntry {
     std::string name;
@@ -53,6 +54,14 @@ inline const std::vector<AlgoEntry>& get_algo_table(){
             return pvs::search(s, d, h, c);
         }
         },
+        {
+            "submission",
+            submission::default_params(),
+            submission::param_defs(),
+            [](State* s, int d, GameHistory& h, SearchContext& c) {
+                return submission::search(s, d, h, c);
+            }
+        },
     };
     
     return table;
@@ -67,4 +76,4 @@ inline const AlgoEntry* find_algo(const std::string& name){
     return nullptr;
 }
 
-inline std::string default_algo_name(){ return "pvs"; } 
+inline std::string default_algo_name(){ return "submission"; } 

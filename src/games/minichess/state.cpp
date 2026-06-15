@@ -2,6 +2,7 @@
 #include <sstream>
 #include <cstdint>
 #include <cstdlib>
+#include <algorithm>
 
 #include "./state.hpp"
 #include "config.hpp"
@@ -64,227 +65,481 @@ static int king_tropism(
 /*============================================================
  * evaluate() — runtime-selectable eval strategy
  *============================================================*/
-static int pawn_promotion_bonus(int owner, int r) {
+// static int pawn_promotion_bonus(int owner, int r) {
+//     int progress;
+
+//     if (owner == 0) {
+//         progress = BOARD_H - 1 - r;
+//     } else {
+//         progress = r;
+//     }
+
+//     int bonus = progress * progress * 25;
+
+//     // 只差一步升變
+//     if ((owner == 0 && r == 1) || (owner == 1 && r == BOARD_H - 2)) {
+//         bonus += 400;
+//     }
+
+//     // 已經到底線
+//     if ((owner == 0 && r == 0) || (owner == 1 && r == BOARD_H - 1)) {
+//         bonus += 1200;
+//     }
+
+//     return bonus;
+// }
+static int pawn_danger_bonus(int owner, int r) {
     int progress;
 
     if (owner == 0) {
+        // white pawn 往 row 0 前進
         progress = BOARD_H - 1 - r;
     } else {
+        // black pawn 往 row BOARD_H - 1 前進
         progress = r;
     }
 
-    int bonus = progress * progress * 25;
+    /*
+     * 不要給太大。
+     * pawn promotion 很重要，但不能重要到願意送 queen / rook。
+     */
+    int bonus = progress * progress * 20;
 
-    // 只差一步升變
-    if ((owner == 0 && r == 1) || (owner == 1 && r == BOARD_H - 2)) {
-        bonus += 400;
+    // 只差兩步左右升變，給一點 bonus
+    if ((owner == 0 && r <= 2) || (owner == 1 && r >= BOARD_H - 3)) {
+        bonus += 150;
     }
 
-    // 已經到底線
-    if ((owner == 0 && r == 0) || (owner == 1 && r == BOARD_H - 1)) {
-        bonus += 1200;
+    // 只差一步升變，才給比較大 bonus
+    if ((owner == 0 && r <= 1) || (owner == 1 && r >= BOARD_H - 2)) {
+        bonus += 350;
     }
 
     return bonus;
 }
+// int State::evaluate(
+//     bool use_kp_eval,
+//     bool use_mobility,
+//     const GameHistory* history
+// ){
+//     (void)history; // just to suppress warning
+
+//     // [ Hackathon TODO 1-1 ]
+//     // if in win state, return max score(you can check base_state.hpp for max score)
+//     if(game_state == WIN){
+//         return P_MAX; // max score for win
+//     }
+    
+//     auto self_board = this->board.board[this->player];
+//     auto oppn_board = this->board.board[1 - this->player];
+//     int self_score = 0, oppn_score = 0;
+
+//     if(use_kp_eval){
+//         /* === KP eval: material + PST + tropism === */
+
+//         int self_kr = -1, self_kc = -1;
+//         int oppn_kr = -1, oppn_kc = -1;
+//         // [ Hackathon TODO 1-3 ]
+//         // get the position for player's king and opponent's king
+//         for(int r=0;r<BOARD_H;r++){
+//             for(int c=0;c<BOARD_W;c+=1){
+//                 if(self_board[r][c] == 6){
+//                     self_kr = r;
+//                     self_kc = c;
+//                 }
+//                 if(oppn_board[r][c] == 6){
+//                     oppn_kr = r;
+//                     oppn_kc = c;
+//                 }
+//             }
+//         }
+
+//         // [ Hackathon TODO 1-4 ]
+//         // sum player/opponent pieces' value and add to score
+//         // if enemy king is still on the board, you should also call king_tropism for your pieces and add the value to score
+//         // king_tropism is already given above
+//         // for(int r=0;r<BOARD_H;r++){
+//         //     for(int c=0;c<BOARD_W;c+=1){
+//         //         if(self_board[r][c]){
+//         //             int pt = self_board[r][c];
+//         //             self_score += kp_material[pt] + pst[pt-1][r][c];
+//         //             if(pt == 1){
+//         //                 self_score += (BOARD_H - 1 - r) * 2;
+//         //             }
+//         //             if(oppn_kr != -1){
+//         //                 self_score += 3 * king_tropism(pt, r, c, oppn_kr, oppn_kc);
+//         //             }
+
+//         //         }
+//         //         if(oppn_board[r][c]){
+//         //             int pt = oppn_board[r][c];
+//         //             int mirror_r = BOARD_H - 1 - r;
+//         //             oppn_score += kp_material[pt] + pst[pt-1][mirror_r][c];
+//         //             if(pt == 1){
+//         //             oppn_score += r * 2;
+//         //             }
+//         //             if(self_kr != -1){
+//         //                 oppn_score += 3 * king_tropism(pt, r, c, self_kr, self_kc);
+//         //             }
+//         //         }
+//         //     }
+//         // }
+//         // player 0 朝 row 減小方向推進(目標 row0)
+//         // player 1 朝 row 增大方向推進(目標 row5)
+//         bool self_advances_down = (this->player == 1);
+
+//         for(int r=0;r<BOARD_H;r++){
+//             for(int c=0;c<BOARD_W;c+=1){
+                
+//                 if(self_board[r][c]){
+//                     int pt = self_board[r][c];
+
+//                     if(pt == 6){
+//                         continue;
+//                     }
+
+//                     int self_mirror_r;
+//                     if(self_advances_down){
+//                         self_mirror_r = BOARD_H - 1 - r;
+//                     }else{
+//                         self_mirror_r = r;
+//                     }
+
+//                     self_score += kp_material[pt] + pst[pt - 1][self_mirror_r][c];
+
+//                     if(pt == 1){
+//                         self_score += pawn_danger_bonus(this->player, r);
+//                     }
+
+//                     if(oppn_kr != -1){
+//                         self_score += 3 * king_tropism(
+//                             pt,
+//                             r,
+//                             c,
+//                             oppn_kr,
+//                             oppn_kc
+//                         );
+//                     }
+//                 }
+//                 if(oppn_board[r][c]){
+//                     int pt = oppn_board[r][c];
+
+//                     if(pt == 6){
+//                         continue;
+//                     }
+
+//                     int oppn_mirror_r;
+//                     if(self_advances_down){
+//                         oppn_mirror_r = r;
+//                     }else{
+//                         oppn_mirror_r = BOARD_H - 1 - r;
+//                     }
+
+//                     oppn_score += kp_material[pt] + pst[pt - 1][oppn_mirror_r][c];
+
+//                     if(pt == 1){
+//                         oppn_score += pawn_danger_bonus(1 - this->player, r);
+//                     }
+
+//                     if(self_kr != -1){
+//                         oppn_score += 3 * king_tropism(
+//                             pt,
+//                             r,
+//                             c,
+//                             self_kr,
+//                             self_kc
+//                         );
+//                     }
+//                 }
+//             }
+//         }
+
+
+//     }else{
+//         /* === Simple material-only eval === */
+
+//         // [ Hackathon TODO 1-2 ]
+//         // Simply add each piece's value to score
+//         for(int r=0;r<BOARD_H;r++){
+//             for(int c=0;c<BOARD_W;c+=1){
+//                 int self_piece = self_board[r][c];
+//                 int oppn_piece = oppn_board[r][c];
+//                 if(self_piece && self_piece != 6){
+//                     self_score += simple_material[self_piece];
+//                 }
+
+//                 if(oppn_piece && oppn_piece != 6){
+//                     oppn_score += simple_material[oppn_piece];
+//                 }
+//             }
+//         }
+//     }
+
+// int bonus = 0;
+
+// /* === Mobility bonus === */
+// if (use_mobility) {
+//     int self_mobility = legal_actions.size();
+
+//     State* temp = (State*)create_null_state();
+//     temp->player = 1 - this->player;
+//     temp->get_legal_actions();
+
+//     int oppn_mobility = temp->legal_actions.size();
+//     delete temp;
+
+//     bonus += 2 * (self_mobility - oppn_mobility);
+// }
+
+// static const int self_threat_val[7] = {
+//     0,      // empty
+//     10,     // pawn
+//     30,     // rook
+//     35,     // knight
+//     40,     // bishop
+//     80,     // queen
+//     0       // king
+// };
+
+// static const int hanging_penalty[7] = {
+//     0,      // empty
+//     80,     // pawn
+//     500,    // rook
+//     550,    // knight
+//     600,    // bishop
+//     2200,   // queen
+//     0       // king
+// };
+
+// int self_threat = 0;
+// int oppn_danger = 0;
+
+// /* === Self threat: 我可以吃對方什麼 === */
+// bool counted_oppn_piece[BOARD_H][BOARD_W] = {};
+
+// for (auto &m : legal_actions) {
+//     int tr = m.second.first;
+//     int tc = m.second.second;
+
+//     int cap = piece_at(1 - this->player, tr, tc);
+
+//     if (cap && !counted_oppn_piece[tr][tc]) {
+//         self_threat += self_threat_val[cap];
+//         counted_oppn_piece[tr][tc] = true;
+//     }
+// /* === Opponent danger: 對方下一步可以吃我什麼 === */
+// State* opp = (State*)create_null_state();
+// opp->player = 1 - this->player;
+// opp->get_legal_actions();
+// //人家抓我king下一步不要走
+// if(opp->game_state == WIN){
+//     delete opp;
+//     return -P_MAX + 1000;
+// }
+// bool counted_self_piece[BOARD_H][BOARD_W] = {};
+
+// for (auto &m : opp->legal_actions) {
+//     int tr = m.second.first;
+//     int tc = m.second.second;
+
+//     int cap = opp->piece_at(1 - opp->player, tr, tc);
+
+//     if (cap && !counted_self_piece[tr][tc]) {
+//         oppn_danger += hanging_penalty[cap];
+//         counted_self_piece[tr][tc] = true;
+//     }
+// }
+
+// delete opp;
+
+// // 我能威脅對方，加一點點；對方能吃我，扣很重
+// bonus += self_threat;
+// bonus -= oppn_danger;
+
+// return self_score - oppn_score + bonus;
+// }
+// }
 int State::evaluate(
     bool use_kp_eval,
     bool use_mobility,
     const GameHistory* history
 ){
-    (void)history; // just to suppress warning
+    (void)history;
 
-    // [ Hackathon TODO 1-1 ]
-    // if in win state, return max score(you can check base_state.hpp for max score)
-    if(game_state == WIN){
-        return P_MAX; // max score for win
+    if(this->game_state == WIN){
+        return P_MAX;
     }
-    
-    auto self_board = this->board.board[this->player];
-    auto oppn_board = this->board.board[1 - this->player];
-    int self_score = 0, oppn_score = 0;
 
-    if(use_kp_eval){
-        /* === KP eval: material + PST + tropism === */
+    int self = this->player;
+    int oppn = 1 - this->player;
 
-        int self_kr = -1, self_kc = -1;
-        int oppn_kr = -1, oppn_kc = -1;
-        // [ Hackathon TODO 1-3 ]
-        // get the position for player's king and opponent's king
-        for(int r=0;r<BOARD_H;r++){
-            for(int c=0;c<BOARD_W;c+=1){
-                if(self_board[r][c] == 6){
-                    self_kr = r;
-                    self_kc = c;
+    auto self_board = this->board.board[self];
+    auto oppn_board = this->board.board[oppn];
+
+    int self_score = 0;
+    int oppn_score = 0;
+    int bonus = 0;
+
+    /*============================================================
+     * Simple material-only eval
+     *============================================================*/
+    if(!use_kp_eval){
+        for(int r = 0; r < BOARD_H; r++){
+            for(int c = 0; c < BOARD_W; c++){
+                int sp = self_board[r][c];
+                int op = oppn_board[r][c];
+
+                if(sp && sp != 6){
+                    self_score += simple_material[sp];
                 }
-                if(oppn_board[r][c] == 6){
-                    oppn_kr = r;
-                    oppn_kc = c;
+
+                if(op && op != 6){
+                    oppn_score += simple_material[op];
                 }
             }
         }
 
-        // [ Hackathon TODO 1-4 ]
-        // sum player/opponent pieces' value and add to score
-        // if enemy king is still on the board, you should also call king_tropism for your pieces and add the value to score
-        // king_tropism is already given above
-        // for(int r=0;r<BOARD_H;r++){
-        //     for(int c=0;c<BOARD_W;c+=1){
-        //         if(self_board[r][c]){
-        //             int pt = self_board[r][c];
-        //             self_score += kp_material[pt] + pst[pt-1][r][c];
-        //             if(pt == 1){
-        //                 self_score += (BOARD_H - 1 - r) * 2;
-        //             }
-        //             if(oppn_kr != -1){
-        //                 self_score += 3 * king_tropism(pt, r, c, oppn_kr, oppn_kc);
-        //             }
+        return self_score - oppn_score;
+    }
 
-        //         }
-        //         if(oppn_board[r][c]){
-        //             int pt = oppn_board[r][c];
-        //             int mirror_r = BOARD_H - 1 - r;
-        //             oppn_score += kp_material[pt] + pst[pt-1][mirror_r][c];
-        //             if(pt == 1){
-        //             oppn_score += r * 2;
-        //             }
-        //             if(self_kr != -1){
-        //                 oppn_score += 3 * king_tropism(pt, r, c, self_kr, self_kc);
-        //             }
-        //         }
-        //     }
-        // }
-        // player 0 朝 row 減小方向推進(目標 row0)
-        // player 1 朝 row 增大方向推進(目標 row5)
-        bool self_advances_down = (this->player == 1);
+    /*============================================================
+     * Find kings
+     *============================================================*/
+    int self_kr = -1;
+    int self_kc = -1;
+    int oppn_kr = -1;
+    int oppn_kc = -1;
 
-        for(int r=0;r<BOARD_H;r++){
-            for(int c=0;c<BOARD_W;c+=1){
-                
-                if(self_board[r][c]){
-                    int pt = self_board[r][c];
-                    if (pt == 1) {
-                    self_score += pawn_promotion_bonus(this->player, r);
-                 }
-                    int self_mirror_r = self_advances_down ? (BOARD_H-1-r) : r;
-                    self_score += kp_material[pt] + pst[pt-1][self_mirror_r][c];
-                    // if(pt == 1){
-                    //     int promo_dist = self_advances_down ? (BOARD_H-1-r) : r;
-                    //     self_score += (BOARD_H - 1 - promo_dist) * 40;
-                    // }
-                    if(oppn_kr != -1){
-                        self_score += 3 * king_tropism(pt, r, c, oppn_kr, oppn_kc);
-                    }
-                }
-                if(oppn_board[r][c]){
+    for(int r = 0; r < BOARD_H; r++){
+        for(int c = 0; c < BOARD_W; c++){
+            if(self_board[r][c] == 6){
+                self_kr = r;
+                self_kc = c;
+            }
 
-                    int pt = oppn_board[r][c];
-                    if (pt == 1) {
-                    oppn_score += pawn_promotion_bonus(1 - this->player, r);
-                    }
-                    int oppn_mirror_r = self_advances_down ? r : (BOARD_H-1-r);
-                    oppn_score += kp_material[pt] + pst[pt-1][oppn_mirror_r][c];
-                    // if(pt == 1){
-                    //     int promo_dist = self_advances_down ? r : (BOARD_H-1-r);
-                    //     oppn_score += (BOARD_H - 1 - promo_dist) * 40;
-                    // }
-                    if(self_kr != -1){
-                        oppn_score += 3 * king_tropism(pt, r, c, self_kr, self_kc);
-                    }
-                }
+            if(oppn_board[r][c] == 6){
+                oppn_kr = r;
+                oppn_kc = c;
             }
         }
+    }
 
+    /*============================================================
+     * Material + PST + king tropism + pawn progress
+     *============================================================*/
+    for(int r = 0; r < BOARD_H; r++){
+        for(int c = 0; c < BOARD_W; c++){
 
-    }else{
-        /* === Simple material-only eval === */
+            int sp = self_board[r][c];
 
-        // [ Hackathon TODO 1-2 ]
-        // Simply add each piece's value to score
-        for(int r=0;r<BOARD_H;r++){
-            for(int c=0;c<BOARD_W;c+=1){
-                int self_piece = self_board[r][c];
-                int oppn_piece = oppn_board[r][c];
-                if(self_piece){
-                    self_score += simple_material[self_piece];
+            if(sp && sp != 6){
+                int pst_r;
+
+                if(self == 0){
+                    pst_r = r;
+                }else{
+                    pst_r = BOARD_H - 1 - r;
                 }
-                if(oppn_piece){
-                    oppn_score += simple_material[oppn_piece];
+
+                self_score += kp_material[sp];
+                self_score += pst[sp - 1][pst_r][c];
+
+                if(oppn_kr != -1){
+                    self_score += 3 * king_tropism(
+                        sp,
+                        r,
+                        c,
+                        oppn_kr,
+                        oppn_kc
+                    );
+                }
+
+                if(sp == 1){
+                    self_score += pawn_danger_bonus(self, r);
+                }
+            }
+
+            int op = oppn_board[r][c];
+
+            if(op && op != 6){
+                int pst_r;
+
+                if(oppn == 0){
+                    pst_r = r;
+                }else{
+                    pst_r = BOARD_H - 1 - r;
+                }
+
+                oppn_score += kp_material[op];
+                oppn_score += pst[op - 1][pst_r][c];
+
+                if(self_kr != -1){
+                    oppn_score += 3 * king_tropism(
+                        op,
+                        r,
+                        c,
+                        self_kr,
+                        self_kc
+                    );
+                }
+
+                if(op == 1){
+                    oppn_score += pawn_danger_bonus(oppn, r);
                 }
             }
         }
     }
 
-int bonus = 0;
+    /*============================================================
+     * Mobility
+     *============================================================*/
+    if(use_mobility){
+        State self_state(this->board, self);
+        self_state.get_legal_actions();
+        int self_mobility = (int)self_state.legal_actions.size();
 
-/* === Mobility bonus === */
-if (use_mobility) {
-    int self_mobility = legal_actions.size();
+        State oppn_state(this->board, oppn);
+        oppn_state.get_legal_actions();
+        int oppn_mobility = (int)oppn_state.legal_actions.size();
 
-    State* temp = (State*)create_null_state();
-    temp->player = 1 - this->player;
-    temp->get_legal_actions();
-
-    int oppn_mobility = temp->legal_actions.size();
-    delete temp;
-
-    bonus += 2 * (self_mobility - oppn_mobility);
-}
-
-static const int self_threat_val[7] = {
-    0, 50, 150, 180, 200, 500, 2000
-};
-
-// 我自己的棋如果被對方下一步可以吃，要扣很重
-static const int hanging_penalty[7] = {
-    0,      // empty
-    120,    // pawn
-    900,    // rook
-    1000,   // knight
-    1100,   // bishop
-    3500,   // queen，非常重
-    0       // king 不在這裡算
-};
-
-int self_threat = 0;
-int oppn_danger = 0;
-
-/* === Self threat: 我可以吃對方什麼 === */
-for (auto &m : legal_actions) {
-    int tr = m.second.first;
-    int tc = m.second.second;
-
-    int cap = piece_at(1 - this->player, tr, tc);
-
-    if (cap) {
-        self_threat += self_threat_val[cap];
+        bonus += 2 * (self_mobility - oppn_mobility);
     }
+
+    return self_score - oppn_score + bonus;
 }
 
 /* === Opponent danger: 對方下一步可以吃我什麼 === */
-State* opp = (State*)create_null_state();
-opp->player = 1 - this->player;
-opp->get_legal_actions();
+// State* opp = (State*)create_null_state();
+// opp->player = 1 - this->player;
+// opp->get_legal_actions();
+// //人家抓我king下一步不要走
+// if(opp->game_state == WIN){
+//     delete opp;
+//     return -P_MAX + 1000;
+// }
+// bool counted_self_piece[BOARD_H][BOARD_W] = {};
 
-for (auto &m : opp->legal_actions) {
-    int tr = m.second.first;
-    int tc = m.second.second;
+// for (auto &m : opp->legal_actions) {
+//     int tr = m.second.first;
+//     int tc = m.second.second;
 
-    int cap = opp->piece_at(1 - opp->player, tr, tc);
+//     int cap = opp->piece_at(1 - opp->player, tr, tc);
 
-    if (cap) {
-        oppn_danger += hanging_penalty[cap];
-    }
-}
+//     if (cap && !counted_self_piece[tr][tc]) {
+//         oppn_danger += hanging_penalty[cap];
+//         counted_self_piece[tr][tc] = true;
+//     }
+// }
 
-delete opp;
+// delete opp;
 
-// 我能威脅對方，加一點點；對方能吃我，扣很重
-bonus += self_threat;
-bonus -= oppn_danger;
+// // 我能威脅對方，加一點點；對方能吃我，扣很重
+// bonus += self_threat;
+// bonus -= oppn_danger;
 
-return self_score - oppn_score + bonus;
-}
+// return self_score - oppn_score + bonus;
+// }
+
 
 
 

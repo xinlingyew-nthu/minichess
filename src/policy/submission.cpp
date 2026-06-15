@@ -1,14 +1,32 @@
 #include <utility>
 #include <algorithm>
 #include <vector>
+#include <unordered_map>
+#include <cstdint>
+#include <cstdlib>
 
 #include "state.hpp"
-#include "PVS.hpp"
+#include "submission.hpp"
 
 /*============================================================
  * Move ordering helper
  * PVS 很吃 move ordering，所以 capture 要排前面
  *============================================================*/
+enum BoundType {
+    TT_EXACT,
+    TT_LOWER,
+    TT_UPPER
+};
+
+struct TTNode {
+    int depth;
+    int score;
+    BoundType bound;
+    Move best_move;
+};
+
+static std::unordered_map<uint64_t, TTNode> trans_table;
+
 static int move_score(State* state, const Move& m) {
     int from_r = m.first.first;
     int from_c = m.first.second;
@@ -70,6 +88,29 @@ static int move_score(State* state, const Move& m) {
     return score;
 }
 
+static std::vector<Move> get_ordered_moves(
+    State* state,
+    const Move* tt_move = nullptr
+) {
+    std::vector<Move> actions = state->legal_actions;
+
+    std::sort(actions.begin(), actions.end(),
+        [state, tt_move](const Move& a, const Move& b) {
+            if (tt_move != nullptr && a == *tt_move) {
+                return true;
+            }
+
+            if (tt_move != nullptr && b == *tt_move) {
+                return false;
+            }
+
+            return move_score(state, a) > move_score(state, b);
+        }
+    );
+
+    return actions;
+}
+
 
 /*============================================================
  * Helper: search child from current player's perspective
@@ -86,11 +127,11 @@ static int search_child_pvs(
     GameHistory& history,
     int ply,
     SearchContext& ctx,
-    const PVSParams& p
+    const SubmissionParams& p
 ) 
 {
     if (same) {
-        return pvs::eval_ctx(
+        return submission::eval_ctx(
             next,
             depth,
             alpha,
@@ -102,7 +143,7 @@ static int search_child_pvs(
         );
     }
 
-    return -pvs::eval_ctx(
+    return -submission::eval_ctx(
         next,
         depth,
         -beta,
@@ -114,14 +155,14 @@ static int search_child_pvs(
     );
 }
 
-int pvs::quiescence(
+int submission::quiescence(
     State* state,
     int alpha,
     int beta,
     GameHistory& history,
     int ply,
     SearchContext& ctx,
-    const PVSParams& p
+    const SubmissionParams& p
 ) {
     ctx.nodes++;
 
@@ -142,7 +183,7 @@ int pvs::quiescence(
     }
 
     if (state->game_state == DRAW) {
-        return -30;
+        return 0;
     }
 
     // 先用目前局面 evaluate
@@ -160,13 +201,7 @@ int pvs::quiescence(
         alpha = stand_pat;
     }
 
-    std::vector<Move> actions = state->legal_actions;
-
-    std::sort(actions.begin(), actions.end(),
-        [state](const Move& a, const Move& b) {
-            return move_score(state, a) > move_score(state, b);
-        }
-    );
+    std::vector<Move> actions = get_ordered_moves(state);
 
     // Quiescence 只搜尋 capture move
     for (const Move& action : actions) {
@@ -229,7 +264,7 @@ int pvs::quiescence(
  * 後面 child：先 null window
  * 如果 null window 可能超過 alpha，再 full window re-search
  *============================================================*/
-int pvs::eval_ctx(
+int submission::eval_ctx(
     State* state,
     int depth,
     int alpha,
@@ -237,7 +272,7 @@ int pvs::eval_ctx(
     GameHistory& history,
     int ply,
     SearchContext& ctx,
-    const PVSParams& p
+    const SubmissionParams& p
 ) {
     ctx.nodes++;
     if (ply > ctx.seldepth) {
@@ -265,13 +300,45 @@ int pvs::eval_ctx(
     }
 
     if (state->game_state == DRAW) {
-        return -30;
+        return 0;
     }
 
     // Repetition
     int rep_score = 0;
     if (state->check_repetition(history, rep_score)) {
-        return -80;
+        return 0;
+    }
+    int alpha_start = alpha;
+    int beta_start = beta;
+
+    uint64_t key = state->hash();
+
+    Move tt_move;
+    bool has_tt_move = false;
+
+    auto found = trans_table.find(key);
+
+    if (found != trans_table.end()) {
+        TTNode& node = found->second;
+
+        if (node.depth >= depth) {
+            if (node.bound == TT_EXACT) {
+                return node.score;
+            }
+
+            if (node.bound == TT_LOWER) {
+                alpha = std::max(alpha, node.score);
+            } else if (node.bound == TT_UPPER) {
+                beta = std::min(beta, node.score);
+            }
+
+            if (alpha >= beta) {
+                return node.score;
+            }
+        }
+
+        tt_move = node.best_move;
+        has_tt_move = true;
     }
 
     history.push(state->hash());
@@ -292,16 +359,15 @@ int pvs::eval_ctx(
         return score;
     }
 
-    std::vector<Move> actions = state->legal_actions;
-
-    std::sort(actions.begin(), actions.end(),
-        [state](const Move& a, const Move& b) {
-            return move_score(state, a) > move_score(state, b);
-        }
+    std::vector<Move> actions = get_ordered_moves(
+        state,
+        has_tt_move ? &tt_move : nullptr
     );
 
-int best_score = M_MAX;
-bool first_child = true;
+    int best_score = M_MAX;
+    bool first_child = true;
+    Move best_move;
+    bool has_best_move = false;
 
 for (const Move& action : actions) {
     State* next = state->next_state(action);
@@ -358,6 +424,8 @@ for (const Move& action : actions) {
 
     if (score > best_score) {
         best_score = score;
+        best_move = action;
+        has_best_move = true;
     }
 
     if (score > alpha) {
@@ -368,7 +436,22 @@ for (const Move& action : actions) {
         break;
     }
 }
+if (has_best_move) {
+    TTNode save;
+    save.depth = depth;
+    save.score = best_score;
+    save.best_move = best_move;
 
+    if (best_score <= alpha_start) {
+        save.bound = TT_UPPER;
+    } else if (best_score >= beta_start) {
+        save.bound = TT_LOWER;
+    } else {
+        save.bound = TT_EXACT;
+    }
+
+    trans_table[key] = save;
+}
 history.pop(state->hash());
 return best_score;
 }
@@ -378,19 +461,19 @@ return best_score;
  *
  * Root search
  *============================================================*/
-SearchResult pvs::search(
+SearchResult submission::search(
     State* state,
     int depth,
     GameHistory& history,
     SearchContext& ctx
 ) {
     ctx.reset();
-
+    trans_table.clear();
     if (depth <= 0) {
         depth = 4;
     }
 
-    PVSParams p = PVSParams::from_map(ctx.params);
+    SubmissionParams p = SubmissionParams::from_map(ctx.params);
 
     SearchResult result;
     result.depth = depth;
@@ -408,13 +491,7 @@ SearchResult pvs::search(
         return result;
     }
 
-    std::vector<Move> actions = state->legal_actions;
-
-    std::sort(actions.begin(), actions.end(),
-        [state](const Move& a, const Move& b) {
-            return move_score(state, a) > move_score(state, b);
-        }
-    );
+    std::vector<Move> actions = get_ordered_moves(state);
 
     int alpha = M_MAX;
     int beta = P_MAX;
@@ -507,7 +584,7 @@ SearchResult pvs::search(
 /*============================================================
  * PVS — default_params / param_defs
  *============================================================*/
-ParamMap pvs::default_params() {
+ParamMap submission::default_params() {
     return {
         {"UseKPEval", "true"},
         {"UseEvalMobility", "true"},
@@ -515,7 +592,7 @@ ParamMap pvs::default_params() {
     };
 }
 
-std::vector<ParamDef> pvs::param_defs() {
+std::vector<ParamDef> submission::param_defs() {
     return {
         {"UseKPEval", ParamDef::CHECK, "true"},
         {"UseEvalMobility", ParamDef::CHECK, "true"},

@@ -1,15 +1,69 @@
 #include <utility>
-#include "state.hpp"
-#include "pvs.hpp"
+#include <algorithm>
+#include <vector>
 
+#include "state.hpp"
+#include "PVS.hpp"
 
 /*============================================================
- * pvs — eval_ctx
+ * Move ordering helper
+ * PVS 很吃 move ordering，所以 capture 要排前面
+ *============================================================*/
+static int move_score(State* state, const Move& m) {
+    int from_r = m.first.first;
+    int from_c = m.first.second;
+    int to_r   = m.second.first;
+    int to_c   = m.second.second;
+
+    int moving = state->piece_at(state->player, from_r, from_c);
+    int captured = state->piece_at(1 - state->player, to_r, to_c);
+
+    static const int val[7] = {
+        0,      // empty
+        200,    // pawn
+        600,    // rook
+        700,    // knight
+        800,    // bishop
+        2000,   // queen
+        100000  // king
+    };
+
+    int score = 0;
+
+    // 1. capture 優先
+    if (captured) {
+        score += 100000 + val[captured] * 10;
+
+        // MVV-LVA
+        if (moving) {
+            score -= val[moving];
+        }
+    }
+
+    // 2. pawn 前進 bonus
+    if (moving == 1) {
+        if (state->player == 0) {
+            score += (from_r - to_r) * 50;
+        } else {
+            score += (to_r - from_r) * 50;
+        }
+    }
+
+    // 3. 中央 bonus
+    score += 5 - abs(to_c - 2);
+
+    return score;
+}
+
+/*============================================================
+ * Helper: search child from current player's perspective
  *
- * Negamax without pruning. Caller manages memory.
- *============================================================*/    
-int pvs::eval_ctx(
-    State *state,
+ * 如果 child 還是同一個 player：不用反號
+ * 如果 child 換成對手：用 negamax 反號
+ *============================================================*/
+static int search_child_pvs(
+    State* next,
+    bool same,
     int depth,
     int alpha,
     int beta,
@@ -17,190 +71,310 @@ int pvs::eval_ctx(
     int ply,
     SearchContext& ctx,
     const PVSParams& p
-){
+) {
+    if (same) {
+        return pvs::eval_ctx(
+            next,
+            depth,
+            alpha,
+            beta,
+            history,
+            ply,
+            ctx,
+            p
+        );
+    }
+
+    return -pvs::eval_ctx(
+        next,
+        depth,
+        -beta,
+        -alpha,
+        history,
+        ply,
+        ctx,
+        p
+    );
+}
+
+/*============================================================
+ * PVS — eval_ctx
+ *
+ * Principal Variation Search
+ *
+ * 第一個 child：full window
+ * 後面 child：先 null window
+ * 如果 null window 可能超過 alpha，再 full window re-search
+ *============================================================*/
+int pvs::eval_ctx(
+    State* state,
+    int depth,
+    int alpha,
+    int beta,
+    GameHistory& history,
+    int ply,
+    SearchContext& ctx,
+    const PVSParams& p
+) {
     ctx.nodes++;
-    if(ply > ctx.seldepth){
+    if (ply > ctx.seldepth) {
         ctx.seldepth = ply;
     }
-    if(ctx.stop){
+
+    if (ctx.stop) {
         return 0;
     }
 
-    /* === Lazy move generation (sets game_state) === */
-    if(state->legal_actions.empty() && state->game_state == UNKNOWN){
+    // Lazy move generation
+    if (state->legal_actions.empty() && state->game_state == UNKNOWN) {
         state->get_legal_actions();
     }
 
-    /* === Terminal / leaf checks === */
-
-    // [ Hackathon TODO 3-1 ]
-    // return the score for a winning terminal state
-    // Hint: prefer faster wins by using ply.
-    if(state->game_state == WIN){
-        return P_MAX - ply; // max score for win, prefer faster wins
+    // Terminal
+    if (state->game_state == WIN) {
+        return P_MAX - ply;
     }
 
-    if(state->game_state == DRAW){
-        return 0;
+    if (state->game_state == DRAW) {
+        return -30;
     }
 
-    /* === Repetition check (game-specific) === */
-    int rep_score;
-    if(state->check_repetition(history, rep_score)){
-        return rep_score;
+    // Repetition
+    int rep_score = 0;
+    if (state->check_repetition(history, rep_score)) {
+        return rep_score -50;
     }
+
     history.push(state->hash());
 
-    if(depth <= 0){
+    // Leaf
+    if (depth <= 0) {
         int score = state->evaluate(
-            p.use_kp_eval, p.use_eval_mobility, &history
-        ); 
+            p.use_kp_eval,
+            p.use_eval_mobility,
+            &history
+        );
+
         history.pop(state->hash());
         return score;
     }
 
-    /* === Negamax loop === */
+    std::vector<Move> actions = state->legal_actions;
+
+    std::sort(actions.begin(), actions.end(),
+        [state](const Move& a, const Move& b) {
+            return move_score(state, a) > move_score(state, b);
+        }
+    );
+
     int best_score = M_MAX;
     bool first_child = true;
 
-    for(auto& action : state->legal_actions){
-
+    for (const Move& action : actions) {
         State* next = state->next_state(action);
-
         bool same = next->same_player_as_parent();
 
-        int child_score;
+        int score;
 
-        if(first_child){
-            child_score = eval_ctx(next, depth-1,
-                                -beta, -alpha,
-                                history, ply+1, ctx, p);
+        if (first_child) {
+            // 第一個 child 用 full window
+            score = search_child_pvs(
+                next,
+                same,
+                depth - 1,
+                alpha,
+                beta,
+                history,
+                ply + 1,
+                ctx,
+                p
+            );
+
             first_child = false;
-        }
-        else{
-            child_score = eval_ctx(next, depth-1,
-                                -alpha-1, -alpha,
-                                history, ply+1, ctx, p);
+        } else {
+            // 其他 child 先用 null window 搜
+            score = search_child_pvs(
+                next,
+                same,
+                depth - 1,
+                alpha,
+                alpha + 1,
+                history,
+                ply + 1,
+                ctx,
+                p
+            );
 
-            int probe_score = same ? child_score : -child_score;
-
-            if(probe_score > alpha && probe_score < beta){
-                child_score = eval_ctx(next, depth-1,
-                                    -beta, -alpha,
-                                    history, ply+1, ctx, p);
+            // 如果它真的可能比 alpha 好，再 full window re-search
+            if (score > alpha && score < beta) {
+                score = search_child_pvs(
+                    next,
+                    same,
+                    depth - 1,
+                    alpha,
+                    beta,
+                    history,
+                    ply + 1,
+                    ctx,
+                    p
+                );
             }
         }
 
-        int raw = same ? child_score : -child_score;
-
         delete next;
 
-        // [ Hackathon TODO 3-5 ]
-        // update best_score if this child is better.
-        //找分數最高的
-        if(raw > best_score){
-            best_score = raw;
+        if (score > best_score) {
+            best_score = score;
         }
 
-        if(raw >alpha){
-            alpha =raw;
+        if (score > alpha) {
+            alpha = score;
         }
-        //後面可以省略 對手肯定會走
-        if(alpha >=beta){
+
+        if (alpha >= beta) {
             break;
         }
-
     }
 
     history.pop(state->hash());
     return best_score;
 }
 
-
 /*============================================================
- * pvs — search
+ * PVS — search
  *
- * Iterate legal moves, call eval_ctx, return SearchResult.
+ * Root search
  *============================================================*/
 SearchResult pvs::search(
-    State *state,
+    State* state,
     int depth,
     GameHistory& history,
     SearchContext& ctx
-){
+) {
     ctx.reset();
 
-    if(depth <= 0){
-        depth = 3;
+    if (depth <= 0) {
+        depth = 4;
     }
 
     PVSParams p = PVSParams::from_map(ctx.params);
+
     SearchResult result;
     result.depth = depth;
 
-    if(!state->legal_actions.size()){
+    if (state->legal_actions.empty()) {
         state->get_legal_actions();
     }
 
-
-    int best_score = M_MAX - 10;
-    int move_index = 0;
     int total_moves = (int)state->legal_actions.size();
-    //避免沒有合法步時 best_move 沒設定。
-    if(total_moves == 0){
+
+    if (total_moves == 0) {
         result.score = 0;
         result.nodes = ctx.nodes;
         result.seldepth = ctx.seldepth;
         return result;
     }
-    int alpha=M_MAX;
-    int beta=P_MAX;
-    for(auto& action : state->legal_actions){
-        /* [ Hackathon TODO 4-1 ]
-         * search this move like TODO 3, but starting from the root */
+
+    std::vector<Move> actions = state->legal_actions;
+
+    std::sort(actions.begin(), actions.end(),
+        [state](const Move& a, const Move& b) {
+            return move_score(state, a) > move_score(state, b);
+        }
+    );
+
+    int alpha = M_MAX;
+    int beta = P_MAX;
+    int best_score = M_MAX;
+    int move_index = 0;
+    bool first_child = true;
+
+    for (const Move& action : actions) {
         State* next = state->next_state(action);
         bool same = next->same_player_as_parent();
-        int child_score = eval_ctx(next, depth - 1, -beta,-alpha,history, 1, ctx , p);
-        int score = same ? child_score : -child_score;
+
+        int score;
+
+        if (first_child) {
+            score = search_child_pvs(
+                next,
+                same,
+                depth - 1,
+                alpha,
+                beta,
+                history,
+                1,
+                ctx,
+                p
+            );
+
+            first_child = false;
+        } else {
+            score = search_child_pvs(
+                next,
+                same,
+                depth - 1,
+                alpha,
+                alpha + 1,
+                history,
+                1,
+                ctx,
+                p
+            );
+
+            if (score > alpha && score < beta) {
+                score = search_child_pvs(
+                    next,
+                    same,
+                    depth - 1,
+                    alpha,
+                    beta,
+                    history,
+                    1,
+                    ctx,
+                    p
+                );
+            }
+        }
+
         delete next;
 
-            if(score > best_score){
-                // [ Hackathon TODO 4-2 ]
-                // keep this move if it is the best so far
-                best_score = score;
-                result.best_move = action;
+        if (score > best_score) {
+            best_score = score;
+            result.best_move = action;
 
-                if(score > alpha){
-                    alpha = score;
-                }
+            if (p.report_partial && ctx.on_root_update) {
+                ctx.on_root_update({
+                    result.best_move,
+                    best_score,
+                    depth,
+                    move_index + 1,
+                    total_moves
+                });
+            }
+        }
 
-                if(p.report_partial && ctx.on_root_update){
-                   ctx.on_root_update({result.best_move, best_score, depth, move_index + 1, total_moves});
-                }
-            }  
+        if (score > alpha) {
+            alpha = score;
+        }
+
         move_index++;
     }
 
-    // [ Hackathon TODO 4-3 ]
-    // update result and return
-        result.score = best_score;
-        result.nodes = ctx.nodes;
-        result.seldepth = ctx.seldepth;
+    result.score = best_score;
+    result.nodes = ctx.nodes;
+    result.seldepth = ctx.seldepth;
 
-        result.pv.clear();
-        if(total_moves > 0){
-            result.pv.push_back(result.best_move);
-        }
+    result.pv.clear();
+    result.pv.push_back(result.best_move);
 
-
-        return result;
-} 
-
+    return result;
+}
 
 /*============================================================
- * pvs — default_params / param_defs
+ * PVS — default_params / param_defs
  *============================================================*/
-ParamMap pvs::default_params(){
+ParamMap pvs::default_params() {
     return {
         {"UseKPEval", "true"},
         {"UseEvalMobility", "true"},
@@ -208,7 +382,7 @@ ParamMap pvs::default_params(){
     };
 }
 
-std::vector<ParamDef> pvs::param_defs(){
+std::vector<ParamDef> pvs::param_defs() {
     return {
         {"UseKPEval", ParamDef::CHECK, "true"},
         {"UseEvalMobility", ParamDef::CHECK, "true"},

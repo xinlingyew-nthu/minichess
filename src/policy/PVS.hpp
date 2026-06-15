@@ -28,6 +28,7 @@ public:
         SearchContext& ctx,
         const PVSParams& p
     );
+    static int quiescence(State* state, int alpha, int beta, GameHistory& history, int ply, SearchContext& ctx, const PVSParams& p); // 新增
     static SearchResult search(
         State *state,
         int depth,

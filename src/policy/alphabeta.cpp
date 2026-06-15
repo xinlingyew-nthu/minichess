@@ -1,15 +1,68 @@
 #include <utility>
+#include <algorithm>
+#include <vector>
+
 #include "state.hpp"
 #include "alphabeta.hpp"
 
+/*============================================================
+ * Move ordering helper
+ * 越可能是好棋，分數越高，越早搜尋
+ *============================================================*/
+static int move_score(State* state, const Move& m) {
+    int from_r = m.first.first;
+    int from_c = m.first.second;
+    int to_r   = m.second.first;
+    int to_c   = m.second.second;
+
+    int moving = state->piece_at(state->player, from_r, from_c);
+    int captured = state->piece_at(1 - state->player, to_r, to_c);
+
+    static const int val[7] = {
+        0,      // empty
+        200,    // pawn
+        600,    // rook
+        700,    // knight
+        800,    // bishop
+        2000,   // queen
+        100000  // king
+    };
+
+    int score = 0;
+
+    // 1. capture 優先，吃越貴越好
+    if (captured) {
+        score += 100000 + val[captured] * 10;
+
+        // MVV-LVA: 吃大子很好，用小子吃更好
+        if (moving) {
+            score -= val[moving];
+        }
+    }
+
+    // 2. pawn 前進稍微加分
+    if (moving == 1) {
+        if (state->player == 0) {
+            score += (from_r - to_r) * 50;  // white row 變小
+        } else {
+            score += (to_r - from_r) * 50;  // black row 變大
+        }
+    }
+
+    // 3. 中央位置稍微加分
+    score += 5 - abs(to_c - 2);
+
+    return score;
+}
 
 /*============================================================
- * Alphabeta — eval_ctx
+ * AlphaBeta — eval_ctx
  *
- * Negamax without pruning. Caller manages memory.
+ * Negamax + Alpha-Beta pruning
+ * 回傳值永遠是「目前 state->player 角度」的分數
  *============================================================*/
 int Alphabeta::eval_ctx(
-    State *state,
+    State* state,
     int depth,
     int alpha,
     int beta,
@@ -17,174 +70,227 @@ int Alphabeta::eval_ctx(
     int ply,
     SearchContext& ctx,
     const ABParams& p
-){
+) {
     ctx.nodes++;
-    if(ply > ctx.seldepth){
+    if (ply > ctx.seldepth) {
         ctx.seldepth = ply;
     }
-    if(ctx.stop){
+
+    if (ctx.stop) {
         return 0;
     }
 
-    /* === Lazy move generation (sets game_state) === */
-    if(state->legal_actions.empty() && state->game_state == UNKNOWN){
+    // Lazy move generation
+    if (state->legal_actions.empty() && state->game_state == UNKNOWN) {
         state->get_legal_actions();
     }
 
-    /* === Terminal / leaf checks === */
-
-    // [ Hackathon TODO 3-1 ]
-    // return the score for a winning terminal state
-    // Hint: prefer faster wins by using ply.
-    if(state->game_state == WIN){
-        return P_MAX - ply; // max score for win, prefer faster wins
+    // Terminal states
+    if (state->game_state == WIN) {
+        return P_MAX - ply;  // 越快贏越好
     }
 
-    if(state->game_state == DRAW){
-        return 0;
+    if (state->game_state == DRAW) {
+        return -30;
     }
 
-    /* === Repetition check (game-specific) === */
-    int rep_score;
-    if(state->check_repetition(history, rep_score)){
-        return rep_score;
+    // Repetition
+    int rep_score = 0;
+    if (state->check_repetition(history, rep_score)) {
+        return rep_score -50;
     }
+
     history.push(state->hash());
 
-    if(depth <= 0){
+    // Leaf node
+    if (depth <= 0) {
         int score = state->evaluate(
-            p.use_kp_eval, p.use_eval_mobility, &history
-        ); 
+            p.use_kp_eval,
+            p.use_eval_mobility,
+            &history
+        );
+
         history.pop(state->hash());
         return score;
     }
 
-    /* === Negamax loop === */
+    std::vector<Move> actions = state->legal_actions;
+
+    std::sort(actions.begin(), actions.end(),
+        [state](const Move& a, const Move& b) {
+            return move_score(state, a) > move_score(state, b);
+        }
+    );
+
     int best_score = M_MAX;
 
-    for(auto& action : state->legal_actions){
-        // [ Hackathon TODO 3-2 ]
-        // create the child state after applying action
-        State* next = state->next_state(action);//加沙我走action 產生下一個棋盤
-
+    for (const Move& action : actions) {
+        State* next = state->next_state(action);
         bool same = next->same_player_as_parent();
 
-        // [Hackathon TODO 3-3]
-        // search the child one level deeper
-        int score = eval_ctx(next, depth - 1, -beta,-alpha,history, ply + 1, ctx, p);//對下一個棋盤評分
+        int child_score;
 
-        // [Hackathon TODO 3-4]
-        // convert raw to the current player's perspective.
-        int raw = same ? score : -score;
+        if (same) {
+            // 如果還是同一個 player，就不用 negamax 反號
+            child_score = eval_ctx(
+                next,
+                depth - 1,
+                alpha,
+                beta,
+                history,
+                ply + 1,
+                ctx,
+                p
+            );
+        } else {
+            // 換對手，所以 window 反過來，分數也反號
+            child_score = -eval_ctx(
+                next,
+                depth - 1,
+                -beta,
+                -alpha,
+                history,
+                ply + 1,
+                ctx,
+                p
+            );
+        }
 
         delete next;
 
-        // [ Hackathon TODO 3-5 ]
-        // update best_score if this child is better.
-        //找分數最高的
-        if(raw > best_score){
-            best_score = raw;
+        if (child_score > best_score) {
+            best_score = child_score;
         }
 
-        if(raw >alpha){
-            alpha =raw;
+        if (child_score > alpha) {
+            alpha = child_score;
         }
-        //後面可以省略 對手肯定會走
-        if(alpha >=beta){
+
+        if (alpha >= beta) {
             break;
         }
-
     }
 
     history.pop(state->hash());
     return best_score;
 }
 
-
 /*============================================================
- * Alphabeta — search
+ * AlphaBeta — search
  *
- * Iterate legal moves, call eval_ctx, return SearchResult.
+ * Root search
  *============================================================*/
 SearchResult Alphabeta::search(
-    State *state,
+    State* state,
     int depth,
     GameHistory& history,
     SearchContext& ctx
-){
+) {
     ctx.reset();
 
-    if(depth <= 0){
-        depth = 3;
+    if (depth <= 0) {
+        depth = 4;
     }
 
     ABParams p = ABParams::from_map(ctx.params);
+
     SearchResult result;
     result.depth = depth;
 
-    if(!state->legal_actions.size()){
+    if (state->legal_actions.empty()) {
         state->get_legal_actions();
     }
 
-
-    int best_score = M_MAX - 10;
-    int move_index = 0;
     int total_moves = (int)state->legal_actions.size();
-    //避免沒有合法步時 best_move 沒設定。
-    if(total_moves == 0){
+
+    if (total_moves == 0) {
         result.score = 0;
         result.nodes = ctx.nodes;
         result.seldepth = ctx.seldepth;
         return result;
     }
-    int alpha=M_MAX;
-    int beta=P_MAX;
-    for(auto& action : state->legal_actions){
-        /* [ Hackathon TODO 4-1 ]
-         * search this move like TODO 3, but starting from the root */
+
+    std::vector<Move> actions = state->legal_actions;
+
+    std::sort(actions.begin(), actions.end(),
+        [state](const Move& a, const Move& b) {
+            return move_score(state, a) > move_score(state, b);
+        }
+    );
+
+    int alpha = M_MAX;
+    int beta = P_MAX;
+    int best_score = M_MAX;
+    int move_index = 0;
+
+    for (const Move& action : actions) {
         State* next = state->next_state(action);
         bool same = next->same_player_as_parent();
-        int child_score = eval_ctx(next, depth - 1, -beta,-alpha,history, 1, ctx , p);
-        int score = same ? child_score : -child_score;
+
+        int score;
+
+        if (same) {
+            score = eval_ctx(
+                next,
+                depth - 1,
+                alpha,
+                beta,
+                history,
+                1,
+                ctx,
+                p
+            );
+        } else {
+            score = -eval_ctx(
+                next,
+                depth - 1,
+                -beta,
+                -alpha,
+                history,
+                1,
+                ctx,
+                p
+            );
+        }
+
         delete next;
 
-            if(score > best_score){
-                // [ Hackathon TODO 4-2 ]
-                // keep this move if it is the best so far
-                best_score = score;
-                result.best_move = action;
+        if (score > best_score) {
+            best_score = score;
+            result.best_move = action;
 
-                if(score > alpha){
-                    alpha = score;
-                }
+            if (p.report_partial && ctx.on_root_update) {
+                ctx.on_root_update({
+                    result.best_move,
+                    best_score,
+                    depth,
+                    move_index + 1,
+                    total_moves
+                });
+            }
+        }
 
-                if(p.report_partial && ctx.on_root_update){
-                   ctx.on_root_update({result.best_move, best_score, depth, move_index + 1, total_moves});
-                }
-            }  
+        if (score > alpha) {
+            alpha = score;
+        }
+
         move_index++;
     }
 
-    // [ Hackathon TODO 4-3 ]
-    // update result and return
-        result.score = best_score;
-        result.nodes = ctx.nodes;
-        result.seldepth = ctx.seldepth;
+    result.score = best_score;
+    result.nodes = ctx.nodes;
+    result.seldepth = ctx.seldepth;
 
-        result.pv.clear();
-        if(total_moves > 0){
-            result.pv.push_back(result.best_move);
-        }
+    result.pv.clear();
+    result.pv.push_back(result.best_move);
 
-
-        return result;
-} 
-
+    return result;
+}
 
 /*============================================================
- * Alphabeta — default_params / param_defs
+ * AlphaBeta — default_params / param_defs
  *============================================================*/
-ParamMap Alphabeta::default_params(){
+ParamMap Alphabeta::default_params() {
     return {
         {"UseKPEval", "true"},
         {"UseEvalMobility", "true"},
@@ -192,7 +298,7 @@ ParamMap Alphabeta::default_params(){
     };
 }
 
-std::vector<ParamDef> Alphabeta::param_defs(){
+std::vector<ParamDef> Alphabeta::param_defs() {
     return {
         {"UseKPEval", ParamDef::CHECK, "true"},
         {"UseEvalMobility", ParamDef::CHECK, "true"},

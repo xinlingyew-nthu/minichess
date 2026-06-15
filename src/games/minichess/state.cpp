@@ -103,21 +103,60 @@ int State::evaluate(
         // sum player/opponent pieces' value and add to score
         // if enemy king is still on the board, you should also call king_tropism for your pieces and add the value to score
         // king_tropism is already given above
+        // for(int r=0;r<BOARD_H;r++){
+        //     for(int c=0;c<BOARD_W;c+=1){
+        //         if(self_board[r][c]){
+        //             int pt = self_board[r][c];
+        //             self_score += kp_material[pt] + pst[pt-1][r][c];
+        //             if(pt == 1){
+        //                 self_score += (BOARD_H - 1 - r) * 2;
+        //             }
+        //             if(oppn_kr != -1){
+        //                 self_score += 3 * king_tropism(pt, r, c, oppn_kr, oppn_kc);
+        //             }
+
+        //         }
+        //         if(oppn_board[r][c]){
+        //             int pt = oppn_board[r][c];
+        //             int mirror_r = BOARD_H - 1 - r;
+        //             oppn_score += kp_material[pt] + pst[pt-1][mirror_r][c];
+        //             if(pt == 1){
+        //             oppn_score += r * 2;
+        //             }
+        //             if(self_kr != -1){
+        //                 oppn_score += 3 * king_tropism(pt, r, c, self_kr, self_kc);
+        //             }
+        //         }
+        //     }
+        // }
+        // player 0 朝 row 減小方向推進(目標 row0)
+        // player 1 朝 row 增大方向推進(目標 row5)
+        bool self_advances_down = (this->player == 1);
+
         for(int r=0;r<BOARD_H;r++){
             for(int c=0;c<BOARD_W;c+=1){
                 if(self_board[r][c]){
                     int pt = self_board[r][c];
-                    self_score += kp_material[pt] + pst[pt-1][r][c];
+                    int self_mirror_r = self_advances_down ? (BOARD_H-1-r) : r;
+                    self_score += kp_material[pt] + pst[pt-1][self_mirror_r][c];
+                    if(pt == 1){
+                        int promo_dist = self_advances_down ? (BOARD_H-1-r) : r;
+                        self_score += (BOARD_H - 1 - promo_dist) * 2;
+                    }
                     if(oppn_kr != -1){
-                        self_score += king_tropism(pt, r, c, oppn_kr, oppn_kc);
+                        self_score += 3 * king_tropism(pt, r, c, oppn_kr, oppn_kc);
                     }
                 }
                 if(oppn_board[r][c]){
                     int pt = oppn_board[r][c];
-                    int mirror_r = BOARD_H - 1 - r;
-                    oppn_score += kp_material[pt] + pst[pt-1][mirror_r][c];
+                    int oppn_mirror_r = self_advances_down ? r : (BOARD_H-1-r);
+                    oppn_score += kp_material[pt] + pst[pt-1][oppn_mirror_r][c];
+                    if(pt == 1){
+                        int promo_dist = self_advances_down ? r : (BOARD_H-1-r);
+                        oppn_score += (BOARD_H - 1 - promo_dist) * 2;
+                    }
                     if(self_kr != -1){
-                        oppn_score += king_tropism(pt, r, c, self_kr, self_kc);
+                        oppn_score += 3 * king_tropism(pt, r, c, self_kr, self_kc);
                     }
                 }
             }
@@ -156,8 +195,37 @@ int State::evaluate(
         int oppn_mobility = temp->legal_actions.size();
         delete temp;
 
-        bonus += 2 * (self_mobility - oppn_mobility);
-}
+        bonus += 4 * (self_mobility - oppn_mobility);
+    }
+    static const int threat_val[7] = {0, 2, 6, 7, 8, 20, 100};
+
+    int self_threat = 0;
+    int oppn_threat = 0;
+
+    for(auto &m : legal_actions){
+        int tr = m.second.first;
+        int tc = m.second.second;
+        int cap = piece_at(1 - player, tr, tc);
+        if(cap){
+            self_threat += threat_val[cap];
+        }
+    }
+
+    State* opp = (State*)create_null_state();
+    opp->get_legal_actions();
+
+    for(auto &m : opp->legal_actions){
+        int tr = m.second.first;
+        int tc = m.second.second;
+        int cap = opp->piece_at(1 - opp->player, tr, tc);
+        if(cap){
+            oppn_threat += threat_val[cap];
+        }
+    }
+
+    delete opp;
+
+    bonus += 3 * (self_threat - oppn_threat);
     return self_score - oppn_score + bonus;
 }
 
@@ -290,7 +358,7 @@ void State::get_legal_actions_naive(){
     this->game_state = NONE;
     std::vector<Move> all_actions;
     all_actions.reserve(64);
-    auto self_board = this->board.board[this->player];
+    auto& self_board = this->board.board[this->player];
     auto oppn_board = this->board.board[1 - this->player];
 
     int now_piece, oppn_piece;

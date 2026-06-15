@@ -16,7 +16,7 @@
 #include "minimax.hpp"
 #include "random.hpp"
 #include "alphabeta.hpp"
-#include "pvs.hpp"
+#include "PVS.hpp"
 
 struct AlgoEntry {
     std::string name;

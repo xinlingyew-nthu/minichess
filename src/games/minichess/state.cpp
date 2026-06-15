@@ -65,9 +65,6 @@ static int king_tropism(
  * evaluate() — runtime-selectable eval strategy
  *============================================================*/
 static int pawn_promotion_bonus(int owner, int r) {
-    // owner == 0: white pawn 往上走，row 變小
-    // owner == 1: black pawn 往下走，row 變大
-
     int progress;
 
     if (owner == 0) {
@@ -76,16 +73,16 @@ static int pawn_promotion_bonus(int owner, int r) {
         progress = r;
     }
 
-    int bonus = progress * progress * 80;
+    int bonus = progress * progress * 25;
 
-    // 只差一步升變，超危險
+    // 只差一步升變
     if ((owner == 0 && r == 1) || (owner == 1 && r == BOARD_H - 2)) {
-        bonus += 1000;
+        bonus += 400;
     }
 
-    // 已經到底線，極度危險
+    // 已經到底線
     if ((owner == 0 && r == 0) || (owner == 1 && r == BOARD_H - 1)) {
-        bonus += 3000;
+        bonus += 1200;
     }
 
     return bonus;
@@ -171,10 +168,10 @@ int State::evaluate(
                  }
                     int self_mirror_r = self_advances_down ? (BOARD_H-1-r) : r;
                     self_score += kp_material[pt] + pst[pt-1][self_mirror_r][c];
-                    if(pt == 1){
-                        int promo_dist = self_advances_down ? (BOARD_H-1-r) : r;
-                        self_score += (BOARD_H - 1 - promo_dist) * 40;
-                    }
+                    // if(pt == 1){
+                    //     int promo_dist = self_advances_down ? (BOARD_H-1-r) : r;
+                    //     self_score += (BOARD_H - 1 - promo_dist) * 40;
+                    // }
                     if(oppn_kr != -1){
                         self_score += 3 * king_tropism(pt, r, c, oppn_kr, oppn_kc);
                     }
@@ -187,10 +184,10 @@ int State::evaluate(
                     }
                     int oppn_mirror_r = self_advances_down ? r : (BOARD_H-1-r);
                     oppn_score += kp_material[pt] + pst[pt-1][oppn_mirror_r][c];
-                    if(pt == 1){
-                        int promo_dist = self_advances_down ? r : (BOARD_H-1-r);
-                        oppn_score += (BOARD_H - 1 - promo_dist) * 40;
-                    }
+                    // if(pt == 1){
+                    //     int promo_dist = self_advances_down ? r : (BOARD_H-1-r);
+                    //     oppn_score += (BOARD_H - 1 - promo_dist) * 40;
+                    // }
                     if(self_kr != -1){
                         oppn_score += 3 * king_tropism(pt, r, c, self_kr, self_kc);
                     }
@@ -218,51 +215,75 @@ int State::evaluate(
         }
     }
 
-    int bonus = 0;
+int bonus = 0;
 
-    /* === Mobility bonus === */
-    if(use_mobility){
-        // [ Hackathon TODO 1-5 ]
-        // you can calculate mobility by legal actions size
-        // bonus += 2 * (self_mobility - oppn_mobility);
-        int self_mobility =legal_actions.size();
-        State* temp =(State*)create_null_state();
-        temp->get_legal_actions();
-        int oppn_mobility = temp->legal_actions.size();
-        delete temp;
+/* === Mobility bonus === */
+if (use_mobility) {
+    int self_mobility = legal_actions.size();
 
-        bonus += 4 * (self_mobility - oppn_mobility);
+    State* temp = (State*)create_null_state();
+    temp->player = 1 - this->player;
+    temp->get_legal_actions();
+
+    int oppn_mobility = temp->legal_actions.size();
+    delete temp;
+
+    bonus += 2 * (self_mobility - oppn_mobility);
+}
+
+static const int self_threat_val[7] = {
+    0, 50, 150, 180, 200, 500, 2000
+};
+
+// 我自己的棋如果被對方下一步可以吃，要扣很重
+static const int hanging_penalty[7] = {
+    0,      // empty
+    120,    // pawn
+    900,    // rook
+    1000,   // knight
+    1100,   // bishop
+    3500,   // queen，非常重
+    0       // king 不在這裡算
+};
+
+int self_threat = 0;
+int oppn_danger = 0;
+
+/* === Self threat: 我可以吃對方什麼 === */
+for (auto &m : legal_actions) {
+    int tr = m.second.first;
+    int tc = m.second.second;
+
+    int cap = piece_at(1 - this->player, tr, tc);
+
+    if (cap) {
+        self_threat += self_threat_val[cap];
     }
-    static const int threat_val[7] = {0, 200, 600, 700, 800, 2000, 100000};
+}
 
-    int self_threat = 0;
-    int oppn_threat = 0;
+/* === Opponent danger: 對方下一步可以吃我什麼 === */
+State* opp = (State*)create_null_state();
+opp->player = 1 - this->player;
+opp->get_legal_actions();
 
-    for(auto &m : legal_actions){
-        int tr = m.second.first;
-        int tc = m.second.second;
-        int cap = piece_at(1 - player, tr, tc);
-        if(cap){
-            self_threat += threat_val[cap];
-        }
+for (auto &m : opp->legal_actions) {
+    int tr = m.second.first;
+    int tc = m.second.second;
+
+    int cap = opp->piece_at(1 - opp->player, tr, tc);
+
+    if (cap) {
+        oppn_danger += hanging_penalty[cap];
     }
+}
 
-    State* opp = (State*)create_null_state();
-    opp->get_legal_actions();
+delete opp;
 
-    for(auto &m : opp->legal_actions){
-        int tr = m.second.first;
-        int tc = m.second.second;
-        int cap = opp->piece_at(1 - opp->player, tr, tc);
-        if(cap){
-            oppn_threat += threat_val[cap];
-        }
-    }
+// 我能威脅對方，加一點點；對方能吃我，扣很重
+bonus += self_threat;
+bonus -= oppn_danger;
 
-    delete opp;
-
-    bonus += (self_threat - oppn_threat)/4;
-    return self_score - oppn_score + bonus;
+return self_score - oppn_score + bonus;
 }
 
 

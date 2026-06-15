@@ -56,7 +56,13 @@ static int move_score(State* state, const Move& m) {
     
 
     // 2. pawn 前進 bonus
-
+    if (moving == 1) {
+        if (state->player == 0) {
+            score += (from_r - to_r) * 50;  // white row 變小
+        } else {
+            score += (to_r - from_r) * 50;  // black row 變大
+        }
+    }
     // 3. 中央 bonus
     score += 5 - abs(to_c - 2);
 
@@ -79,7 +85,8 @@ static int search_child_pvs(
     int ply,
     SearchContext& ctx,
     const PVSParams& p
-) {
+) 
+{
     if (same) {
         return pvs::eval_ctx(
             next,
@@ -103,6 +110,109 @@ static int search_child_pvs(
         ctx,
         p
     );
+}
+
+int pvs::quiescence(
+    State* state,
+    int alpha,
+    int beta,
+    GameHistory& history,
+    int ply,
+    SearchContext& ctx,
+    const PVSParams& p
+) {
+    ctx.nodes++;
+
+    if (ply > ctx.seldepth) {
+        ctx.seldepth = ply;
+    }
+
+    if (ctx.stop) {
+        return 0;
+    }
+
+    if (state->legal_actions.empty() && state->game_state == UNKNOWN) {
+        state->get_legal_actions();
+    }
+
+    if (state->game_state == WIN) {
+        return P_MAX - ply;
+    }
+
+    if (state->game_state == DRAW) {
+        return -30;
+    }
+
+    // 先用目前局面 evaluate
+    int stand_pat = state->evaluate(
+        p.use_kp_eval,
+        p.use_eval_mobility,
+        &history
+    );
+
+
+    if (stand_pat > alpha) {
+        alpha = stand_pat;
+    }
+
+    std::vector<Move> actions = state->legal_actions;
+
+    std::sort(actions.begin(), actions.end(),
+        [state](const Move& a, const Move& b) {
+            return move_score(state, a) > move_score(state, b);
+        }
+    );
+
+    // Quiescence 只搜尋 capture move
+    for (const Move& action : actions) {
+        int to_r = action.second.first;
+        int to_c = action.second.second;
+
+        int captured = state->piece_at(1 - state->player, to_r, to_c);
+
+        if (!captured) {
+            continue;
+        }
+
+        State* next = state->next_state(action);
+        bool same = next->same_player_as_parent();
+
+        int score;
+
+        if (same) {
+            score = quiescence(
+                next,
+                alpha,
+                beta,
+                history,
+                ply + 1,
+                ctx,
+                p
+            );
+        } else {
+            score = -quiescence(
+                next,
+                -beta,
+                -alpha,
+                history,
+                ply + 1,
+                ctx,
+                p
+            );
+        }
+
+        delete next;
+
+        if (score >= beta) {
+            return beta;
+        }
+
+        if (score > alpha) {
+            alpha = score;
+        }
+    }
+
+    return alpha;
 }
 
 /*============================================================
@@ -132,7 +242,13 @@ int pvs::eval_ctx(
     if (ctx.stop) {
         return 0;
     }
-
+    if (ply >= 14) {
+        return state->evaluate(
+            p.use_kp_eval,
+            p.use_eval_mobility,
+            &history
+        );
+    }
     // Lazy move generation
     if (state->legal_actions.empty() && state->game_state == UNKNOWN) {
         state->get_legal_actions();
@@ -157,10 +273,14 @@ int pvs::eval_ctx(
 
     // Leaf
     if (depth <= 0) {
-        int score = state->evaluate(
-            p.use_kp_eval,
-            p.use_eval_mobility,
-            &history
+        int score = quiescence(
+            state,
+            alpha,
+            beta,
+            history,
+            ply,
+            ctx,
+            p
         );
 
         history.pop(state->hash());

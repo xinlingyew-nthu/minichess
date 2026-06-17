@@ -26,6 +26,17 @@ struct TTNode {
 };
 
 static std::unordered_map<uint64_t, TTNode> trans_table;
+static int score_to_tt(int score, int ply) {
+    if (score >= P_MAX - 1000) return score + ply;
+    if (score <= M_MAX + 1000) return score - ply;
+    return score;
+}
+
+static int score_from_tt(int score, int ply) {
+    if (score >= P_MAX - 1000) return score - ply;
+    if (score <= M_MAX + 1000) return score + ply;
+    return score;
+}
 
 static int move_score(State* state, const Move& m) {
     int from_r = m.first.first;
@@ -322,18 +333,20 @@ int submission::eval_ctx(
         TTNode& node = found->second;
 
         if (node.depth >= depth) {
+            int tt_score = score_from_tt(node.score, ply);
+
             if (node.bound == TT_EXACT) {
-                return node.score;
+                return tt_score;
             }
 
             if (node.bound == TT_LOWER) {
-                alpha = std::max(alpha, node.score);
+                alpha = std::max(alpha, tt_score);
             } else if (node.bound == TT_UPPER) {
-                beta = std::min(beta, node.score);
+                beta = std::min(beta, tt_score);
             }
 
             if (alpha >= beta) {
-                return node.score;
+                return tt_score;
             }
         }
 
@@ -439,7 +452,7 @@ for (const Move& action : actions) {
 if (has_best_move) {
     TTNode save;
     save.depth = depth;
-    save.score = best_score;
+    save.score = score_to_tt(best_score, ply);
     save.best_move = best_move;
 
     if (best_score <= alpha_start) {
@@ -468,7 +481,11 @@ SearchResult submission::search(
     SearchContext& ctx
 ) {
     ctx.reset();
-    trans_table.clear();
+
+    if (depth <= 1) {
+        trans_table.clear();
+    }
+
     if (depth <= 0) {
         depth = 4;
     }
@@ -492,6 +509,22 @@ SearchResult submission::search(
     }
 
     std::vector<Move> actions = get_ordered_moves(state);
+
+    // MiniChess rule: capturing opponent king wins immediately.
+    // At root, choose it without spending search time.
+    for(const Move& action : actions){
+        int tr = action.second.first;
+        int tc = action.second.second;
+        if(state->piece_at(1 - state->player, tr, tc) == 6){
+            result.best_move = action;
+            result.score = P_MAX;
+            result.nodes = ctx.nodes;
+            result.seldepth = ctx.seldepth;
+            result.pv.clear();
+            result.pv.push_back(action);
+            return result;
+        }
+    }
 
     int alpha = M_MAX;
     int beta = P_MAX;

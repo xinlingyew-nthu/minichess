@@ -117,6 +117,70 @@ static int pawn_danger_bonus(int owner, int r) {
 
     return bonus;
 }
+
+/*============================================================
+ * Tactical eval helpers
+ *
+ * These are still cheap enough for leaf evaluation, but they make
+ * the AI stop walking into one-move king captures or hanging queens.
+ *============================================================*/
+
+static const int threat_bonus_value[7] = {
+    0,      // empty
+    25,     // pawn
+    90,     // rook
+    100,    // knight
+    110,    // bishop
+    260,    // queen
+    0       // king handled by WIN
+};
+
+static const int hanging_penalty_value[7] = {
+    0,      // empty
+    180,    // pawn
+    700,    // rook
+    780,    // knight
+    850,    // bishop
+    2600,   // queen
+    0       // king handled by WIN
+};
+
+static int capture_pressure_score(State& s, int target_player, const int val[7]){
+    bool counted[BOARD_H][BOARD_W] = {};
+    int score = 0;
+
+    for(const Move& m : s.legal_actions){
+        int tr = (int)m.second.first;
+        int tc = (int)m.second.second;
+        int cap = s.piece_at(target_player, tr, tc);
+
+        if(cap && !counted[tr][tc]){
+            score += val[cap];
+            counted[tr][tc] = true;
+        }
+    }
+
+    return score;
+}
+
+static int king_ring_bonus(int r, int c, int kr, int kc){
+    if(kr < 0){
+        return 0;
+    }
+
+    int dist = std::max(std::abs(r - kr), std::abs(c - kc));
+
+    if(dist == 1){
+        return 35;
+    }
+
+    if(dist == 2){
+        return 12;
+    }
+
+    return 0;
+}
+
 // int State::evaluate(
 //     bool use_kp_eval,
 //     bool use_mobility,
@@ -359,6 +423,23 @@ static int pawn_danger_bonus(int owner, int r) {
 // return self_score - oppn_score + bonus;
 // }
 // }
+//殘局
+static int count_nonking_material(const Board& board, int player) {
+    int total = 0;
+
+    for (int r = 0; r < BOARD_H; r++) {
+        for (int c = 0; c < BOARD_W; c++) {
+            int p = board.board[player][r][c];
+
+            if (p && p != 6) {
+                total += kp_material[p];
+            }
+        }
+    }
+
+    return total;
+}
+
 int State::evaluate(
     bool use_kp_eval,
     bool use_mobility,
@@ -380,6 +461,29 @@ int State::evaluate(
     int oppn_score = 0;
     int bonus = 0;
 
+    /*
+     * 先產生雙方合法步。
+     * 這一步雖然花一點時間，但可以同時用在：
+     * 1. mobility
+     * 2. 是否下一步會被吃 king
+     * 3. threat / hanging piece 評估
+     */
+    State self_state(this->board, self);
+    self_state.get_legal_actions();
+
+    State oppn_state(this->board, oppn);
+    oppn_state.get_legal_actions();
+
+    // 我現在能吃對方 king，這就是非常好的局面。
+    if(self_state.game_state == WIN){
+        return P_MAX - 1;
+    }
+
+    // 對方下一手能吃我 king，這種棋要極力避免。
+    if(oppn_state.game_state == WIN){
+        return M_MAX + 1000;
+    }
+
     /*============================================================
      * Simple material-only eval
      *============================================================*/
@@ -399,7 +503,17 @@ int State::evaluate(
             }
         }
 
-        return self_score - oppn_score;
+        if(use_mobility){
+            bonus += 2 * (
+                (int)self_state.legal_actions.size()
+                - (int)oppn_state.legal_actions.size()
+            );
+        }
+
+        bonus += capture_pressure_score(self_state, oppn, threat_bonus_value);
+        bonus -= capture_pressure_score(oppn_state, self, hanging_penalty_value);
+
+        return self_score - oppn_score + bonus;
     }
 
     /*============================================================
@@ -452,6 +566,9 @@ int State::evaluate(
                         oppn_kr,
                         oppn_kc
                     );
+
+                    // pieces around enemy king are usually useful in king-capture chess
+                    self_score += king_ring_bonus(r, c, oppn_kr, oppn_kc);
                 }
 
                 if(sp == 1){
@@ -481,6 +598,8 @@ int State::evaluate(
                         self_kr,
                         self_kc
                     );
+
+                    oppn_score += king_ring_bonus(r, c, self_kr, self_kc);
                 }
 
                 if(op == 1){
@@ -491,58 +610,25 @@ int State::evaluate(
     }
 
     /*============================================================
-     * Mobility
+     * Mobility + tactical safety
      *============================================================*/
     if(use_mobility){
-        State self_state(this->board, self);
-        self_state.get_legal_actions();
         int self_mobility = (int)self_state.legal_actions.size();
-
-        State oppn_state(this->board, oppn);
-        oppn_state.get_legal_actions();
         int oppn_mobility = (int)oppn_state.legal_actions.size();
 
+        // 不能太大，不然會為了走法多而送 queen。
         bonus += 2 * (self_mobility - oppn_mobility);
     }
 
+    // 我能吃到對方子：加一點。
+    bonus += capture_pressure_score(self_state, oppn, threat_bonus_value);
+
+    // 對方下一步能吃我子：扣很多。
+    // 這個是現在打 boss 很重要的修正：不要一直送大子。
+    bonus -= capture_pressure_score(oppn_state, self, hanging_penalty_value);
+
     return self_score - oppn_score + bonus;
 }
-
-/* === Opponent danger: 對方下一步可以吃我什麼 === */
-// State* opp = (State*)create_null_state();
-// opp->player = 1 - this->player;
-// opp->get_legal_actions();
-// //人家抓我king下一步不要走
-// if(opp->game_state == WIN){
-//     delete opp;
-//     return -P_MAX + 1000;
-// }
-// bool counted_self_piece[BOARD_H][BOARD_W] = {};
-
-// for (auto &m : opp->legal_actions) {
-//     int tr = m.second.first;
-//     int tc = m.second.second;
-
-//     int cap = opp->piece_at(1 - opp->player, tr, tc);
-
-//     if (cap && !counted_self_piece[tr][tc]) {
-//         oppn_danger += hanging_penalty[cap];
-//         counted_self_piece[tr][tc] = true;
-//     }
-// }
-
-// delete opp;
-
-// // 我能威脅對方，加一點點；對方能吃我，扣很重
-// bonus += self_threat;
-// bonus -= oppn_danger;
-
-// return self_score - oppn_score + bonus;
-// }
-
-
-
-
 
 /*============================================================
  * Zobrist hash for transposition table
@@ -1198,3 +1284,4 @@ bool State::check_repetition(const GameHistory& history, int& out_score) const {
     }
     return false;
 }
+

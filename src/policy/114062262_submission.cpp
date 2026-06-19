@@ -6,7 +6,7 @@
 #include <cstdlib>
 
 #include "state.hpp"
-#include "submission.hpp"
+#include "114062262_submission.hpp"
 
 /*============================================================
  * Move ordering helper
@@ -80,6 +80,53 @@ static bool deadline_score(State* state, int ply, int& score) {
     }
 
     return true;
+}
+static bool repetition_draw_score(
+    State* state,
+    const GameHistory& history,
+    int& score
+) {
+    return state->check_repetition(history, score);
+}
+
+static int repeated_position_bias(State* state, const GameHistory& history) {
+    if (history.count(state->hash()) == 0) {
+        return 0;
+    }
+
+    int balance = material_balance(state, state->player);
+
+    if (balance > 0) {
+        return -1000 - std::min(balance, 8000);
+    }
+
+    if (balance < 0) {
+        return 1000 + std::min(-balance, 8000);
+    }
+
+    return -200;
+}
+
+static int root_repetition_penalty(State* state, const GameHistory& history) {
+    int repeats = history.count(state->hash());
+
+    if (repeats >= 3) {
+        return 180000;
+    }
+
+    if (repeats == 2) {
+        return 90000;
+    }
+
+    if (repeats == 1) {
+        return 30000;
+    }
+
+    return 0;
+}
+
+static int orient_child_score(int child_score, bool same) {
+    return same ? child_score : -child_score;
 }
 
 static int move_score(State* state, const Move& m) {
@@ -307,34 +354,42 @@ int submission::quiescence(
         int captured = state->piece_at(1 - state->player, to_r, to_c);
 
         if (!captured) {
-            continue;
+            continue;//quiescence search 只延伸 capture moves
         }
 
         State* next = state->next_state(action);
         bool same = next->same_player_as_parent();
-
         int score;
+        int rep_score = 0;
 
-        if (same) {
-            score = quiescence(
-                next,
-                alpha,
-                beta,
-                history,
-                ply + 1,
-                ctx,
-                p
-            );
+        if (repetition_draw_score(next, history, rep_score)) {
+            score = orient_child_score(rep_score, same);
         } else {
-            score = -quiescence(
-                next,
-                -beta,
-                -alpha,
-                history,
-                ply + 1,
-                ctx,
-                p
-            );
+            history.push(next->hash());
+
+            if (same) {
+                score = quiescence(
+                    next,
+                    alpha,
+                    beta,
+                    history,
+                    ply + 1,
+                    ctx,
+                    p
+                );
+            } else {
+                score = -quiescence(
+                    next,
+                    -beta,
+                    -alpha,
+                    history,
+                    ply + 1,
+                    ctx,
+                    p
+                );
+            }
+
+            history.pop(next->hash());
         }
 
         delete next;
@@ -406,8 +461,8 @@ int submission::eval_ctx(
 
     // Repetition
     int rep_score = 0;
-    if (state->check_repetition(history, rep_score)) {
-        return 0;
+    if (repetition_draw_score(state, history, rep_score)) {
+        return rep_score;
     }
     int alpha_start = alpha;
     int beta_start = beta;
@@ -522,7 +577,7 @@ for (const Move& action : actions) {
     }
 
     delete next;
-
+    
     if (score > best_score) {
         best_score = score;
         best_move = action;
@@ -639,8 +694,14 @@ SearchResult submission::search(
         bool same = next->same_player_as_parent();
 
         int score;
+        int rep_score = 0;
 
-        if (first_child) {
+        bool is_repetition = repetition_draw_score(next, history, rep_score);
+
+        if (is_repetition) {
+            score = orient_child_score(rep_score, same);
+            first_child = false;
+        } else if (first_child) {
             score = search_child_pvs(
                 next,
                 same,
@@ -680,6 +741,14 @@ SearchResult submission::search(
                     p
                 );
             }
+        }
+
+        if (!is_repetition) {
+            score += orient_child_score(
+                repeated_position_bias(next, history),
+                same
+            );
+            score -= root_repetition_penalty(next, history);
         }
 
         delete next;

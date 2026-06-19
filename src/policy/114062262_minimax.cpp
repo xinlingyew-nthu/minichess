@@ -1,6 +1,6 @@
 #include <utility>
 #include "state.hpp"
-#include "minimax.hpp"
+#include "114062262_minimax.hpp"
 
 
 /*============================================================

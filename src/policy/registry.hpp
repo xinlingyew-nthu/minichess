@@ -13,11 +13,11 @@
 #include <vector>
 #include "search_types.hpp"
 #include "game_history.hpp"
-#include "minimax.hpp"
+#include "114062262_minimax.hpp"
 #include "random.hpp"
-#include "alphabeta.hpp"
-#include "PVS.hpp"
-#include "submission.hpp"
+#include "114062262_alphabeta.hpp"
+#include "114062262_pvs.hpp"
+#include "114062262_submission.hpp"
 
 struct AlgoEntry {
     std::string name;
@@ -30,10 +30,10 @@ inline const std::vector<AlgoEntry>& get_algo_table(){
     static const std::vector<AlgoEntry> table = {
         {
             "minimax",
-            MiniMax::default_params(),
-            MiniMax::param_defs(),
+            submission::default_params(),
+            submission::param_defs(),
             [](State* s, int d, GameHistory& h, SearchContext& c){
-                return MiniMax::search(s, d, h, c);
+                return submission::search(s, d, h, c);
             }
             
         },
